@@ -439,8 +439,12 @@ def _format_iso_countdown(iso_ts: str) -> str:
 # fresh each poll so token rotations by Claude Code are picked up automatically.
 
 _USAGE_API = "https://claude.ai/api/oauth/usage"
+_USAGE_UA   = "claude-cli/1.0 (external, cli)"
 _CREDS_PATH = os.path.expanduser("~/.claude/.credentials.json")
 _KEYCHAIN_SERVICE = "Claude Code-credentials"
+_DESKTOP_CONFIG = os.path.expanduser(
+    "~/Library/Application Support/Claude/config.json")
+_DESKTOP_SAFE_STORAGE = "Claude Safe Storage"
 
 
 def _token_from_creds_file() -> str | None:
@@ -470,11 +474,76 @@ def _token_from_macos_keychain() -> str | None:
         return None
 
 
+# Cache the decrypted desktop token so the slow Keychain+openssl path runs once
+# per token lifetime, not on every 60s usage poll.
+_desktop_token_cache = {"token": None, "expires_at": 0.0}
+
+
+def invalidate_desktop_token() -> None:
+    _desktop_token_cache["token"] = None
+    _desktop_token_cache["expires_at"] = 0.0
+
+
+def _token_from_macos_desktop() -> str | None:
+    """The Claude desktop app (Electron) keeps its OAuth token AES-encrypted in
+    config.json, protected by a 'Claude Safe Storage' Keychain secret. Decrypt
+    it with the Chromium v10 scheme (PBKDF2-SHA1 → AES-128-CBC) via the openssl
+    CLI, so no extra Python dependency is required. macOS only.
+
+    The first access prompts the user to allow reading the Keychain item; after
+    'Always Allow' it is silent. The result is cached until shortly before the
+    token's own expiry so the decryption isn't repeated every poll. If anything
+    fails we return None and the quota bars stay at 0 (tokens are unaffected)."""
+    if sys.platform != "darwin":
+        return None
+
+    now_ms = time.time() * 1000
+    cached = _desktop_token_cache
+    if cached["token"] and now_ms < cached["expires_at"] - 60_000:
+        return cached["token"]
+
+    try:
+        import base64, hashlib, subprocess
+        with open(_DESKTOP_CONFIG) as f:
+            cfg = json.load(f)
+        blob_b64 = cfg.get("oauth:tokenCacheV2") or cfg.get("oauth:tokenCache")
+        if not blob_b64:
+            return None
+        blob = base64.b64decode(blob_b64)
+        if blob[:3] != b"v10":
+            return None
+        keypw = subprocess.run(
+            ["security", "find-generic-password", "-s", _DESKTOP_SAFE_STORAGE, "-w"],
+            capture_output=True, text=True, timeout=10).stdout.strip()
+        if not keypw:
+            return None
+        key = hashlib.pbkdf2_hmac("sha1", keypw.encode(), b"saltysalt", 1003, 16)
+        dec = subprocess.run(
+            ["openssl", "enc", "-aes-128-cbc", "-d",
+             "-K", key.hex(), "-iv", "20" * 16, "-nopad"],
+            input=blob[3:], capture_output=True, timeout=10).stdout
+        if not dec:
+            return None
+        dec = dec[:-dec[-1]]   # strip PKCS7 padding
+        obj = json.loads(dec)
+        for v in obj.values():
+            if isinstance(v, dict) and isinstance(v.get("token"), str):
+                cached["token"] = v["token"]
+                cached["expires_at"] = float(v.get("expiresAt") or (now_ms + 3_600_000))
+                return v["token"]
+    except Exception:
+        return None
+    return None
+
+
 def read_oauth_token() -> str | None:
-    """Locate the claude.ai usage OAuth token across platforms:
-    credentials file first (Linux/Windows/older macOS), then the macOS
-    Keychain. Returns None if Claude Code isn't logged in on this machine."""
-    return _token_from_creds_file() or _token_from_macos_keychain()
+    """Locate the claude.ai usage OAuth token across platforms and clients:
+    credentials file (Linux/Windows/older macOS CLI), then the macOS Keychain
+    (newer CLI), then the macOS Claude desktop app's encrypted store. Returns
+    None if no logged-in Claude is found on this machine."""
+    return (_token_from_creds_file()
+            or _token_from_macos_keychain()
+            or _token_from_macos_desktop())
 
 
 def get_usage(weekly_limit: int = 0, daily_limit: int = 0) -> dict | None:
@@ -492,7 +561,7 @@ def get_usage(weekly_limit: int = 0, daily_limit: int = 0) -> dict | None:
         _USAGE_API,
         headers={
             "Authorization": f"Bearer {token}",
-            "User-Agent":    "claude-code/1.0.0",
+            "User-Agent":    _USAGE_UA,
             "Accept":        "application/json",
         },
     )
@@ -501,6 +570,8 @@ def get_usage(weekly_limit: int = 0, daily_limit: int = 0) -> dict | None:
             data = json.loads(r.read())
     except urllib.error.HTTPError as e:
         vprint(f"[usage] HTTP {e.code}: {e.reason}")
+        if e.code == 401:
+            invalidate_desktop_token()   # token expired/rotated → re-read next poll
         return None
     except Exception as e:
         vprint(f"[usage] request error: {e}")
