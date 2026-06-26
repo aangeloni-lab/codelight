@@ -327,8 +327,10 @@ class CodelightApp:
         if cfg.get("autostart") and platform.system() in ("Darwin", "Windows"):
             set_autostart(True)  # idempotent, re-applies in case script path moved
 
+        # Begin monitoring as soon as the window is up — "open and it works".
+        # Launched at login (--autostart) we also minimise to stay out of the way.
+        self.root.after(100, self.start)
         if "--autostart" in sys.argv:
-            self.root.after(100, self.start)
             self.root.iconify()
 
     def _on_autostart_toggle(self):
