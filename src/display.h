@@ -15,8 +15,8 @@ struct DisplayData {
     String   weeklyReset;     // e.g. "3d 1h"
     String   sessionReset;    // e.g. "2h 15m"
     int      sessions;
-    long     tokensIn;        // summed input tokens across active sessions
-    long     tokensOut;       // summed output tokens across active sessions
+    long     tokensNet;       // real work across sessions: input_new + output
+    long     tokensGross;     // everything processed, cache included
     ClaudeStatus status;
     bool     connected;       // companion reachable
 };

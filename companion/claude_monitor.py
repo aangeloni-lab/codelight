@@ -254,12 +254,14 @@ def _session_status_from_hook(session_id: str) -> str | None:
         return None
 
 
-_token_cache: dict = {}   # path → (stat_key, tokens_in, tokens_out)
+_token_cache: dict = {}   # path → (stat_key, input_new, output, cache_create, cache_read)
 
 
-def session_token_usage(jsonl_path: str) -> tuple[int, int]:
-    """Sum (input, output) tokens reported across all assistant turns in a
-    session's JSONL history. Input includes cache creation/read tokens.
+def session_token_usage(jsonl_path: str) -> tuple[int, int, int, int]:
+    """Sum token usage across all assistant turns in a session's JSONL history.
+    Returns (input_new, output, cache_creation, cache_read) so callers can form
+    both a net figure (real work = input_new + output) and a gross figure
+    (everything the model processed, cache included).
 
     Result is cached per file and reused while its (mtime, size) is unchanged,
     so a multi-MB history isn't re-parsed on every 2s poll."""
@@ -269,12 +271,11 @@ def session_token_usage(jsonl_path: str) -> tuple[int, int]:
         stat_key = (st.st_mtime, st.st_size)
         cached = _token_cache.get(jsonl_path)
         if cached and cached[0] == stat_key:
-            return cached[1], cached[2]
+            return cached[1], cached[2], cached[3], cached[4]
     except OSError:
         pass
 
-    total_in  = 0
-    total_out = 0
+    input_new = output = cache_create = cache_read = 0
     try:
         with open(jsonl_path, "r", errors="ignore") as f:
             for line in f:
@@ -288,16 +289,16 @@ def session_token_usage(jsonl_path: str) -> tuple[int, int]:
                 usage = (entry.get("message") or {}).get("usage") or entry.get("usage")
                 if not usage:
                     continue
-                total_in  += (usage.get("input_tokens", 0)
-                              + usage.get("cache_creation_input_tokens", 0)
-                              + usage.get("cache_read_input_tokens", 0))
-                total_out += usage.get("output_tokens", 0)
+                input_new    += usage.get("input_tokens", 0)
+                output       += usage.get("output_tokens", 0)
+                cache_create += usage.get("cache_creation_input_tokens", 0)
+                cache_read   += usage.get("cache_read_input_tokens", 0)
     except Exception:
         pass
 
     if stat_key is not None:
-        _token_cache[jsonl_path] = (stat_key, total_in, total_out)
-    return total_in, total_out
+        _token_cache[jsonl_path] = (stat_key, input_new, output, cache_create, cache_read)
+    return input_new, output, cache_create, cache_read
 
 
 def session_status(data: dict) -> str:
@@ -340,18 +341,18 @@ def session_status(data: dict) -> str:
 
 
 def get_active_sessions() -> tuple[int, int, str, int, int]:
-    """Return (active_count, live_count, overall_status, tokens_in, tokens_out).
+    """Return (active_count, live_count, overall_status, tokens_net, tokens_gross).
 
     active_count — sessions with a working/waiting hook state (shown on display)
     live_count   — all live non-probe Claude processes (used for WORKING_STICKY gate)
     overall_status — 'working', 'waiting', or 'inactive'
-    tokens_in/out — summed token usage across active sessions' JSONL history
+    tokens_net   — real work across live sessions: input_new + output
+    tokens_gross — everything processed, cache included
     """
     active  = 0
     live    = 0
     overall = "inactive"
-    tokens_in  = 0
-    tokens_out = 0
+    sum_input = sum_output = sum_cache_create = sum_cache_read = 0
 
     session_files = glob.glob(os.path.join(CLAUDE_SESSIONS_DIR, "*.json"))
     vprint(f"[sessions] scanning {len(session_files)} file(s) in {CLAUDE_SESSIONS_DIR}")
@@ -379,9 +380,11 @@ def get_active_sessions() -> tuple[int, int, str, int, int]:
             # only active sessions made it flicker to 0 whenever Claude paused.
             jsonl = find_session_jsonl(data)
             if jsonl:
-                t_in, t_out = session_token_usage(jsonl)
-                tokens_in  += t_in
-                tokens_out += t_out
+                t_in, t_out, t_cc, t_cr = session_token_usage(jsonl)
+                sum_input        += t_in
+                sum_output       += t_out
+                sum_cache_create += t_cc
+                sum_cache_read   += t_cr
 
             st = session_status(data)
             if not st:
@@ -399,9 +402,11 @@ def get_active_sessions() -> tuple[int, int, str, int, int]:
             vprint(f"  {os.path.basename(sf)}  error: {e}")
             continue
 
+    tokens_net   = sum_input + sum_output
+    tokens_gross = tokens_net + sum_cache_create + sum_cache_read
     vprint(f"[sessions] result: {active} active, {live} live, overall={overall}, "
-           f"tokens_in={tokens_in}, tokens_out={tokens_out}")
-    return active, live, overall, tokens_in, tokens_out
+           f"net={tokens_net}, gross={tokens_gross}")
+    return active, live, overall, tokens_net, tokens_gross
 
 
 def _format_countdown(diff_secs: int) -> str:
@@ -535,8 +540,8 @@ def print_payload(payload: dict, url: str) -> None:
     print(f"  Weekly:   {bar(payload['weekly_pct'])}  resets {payload['weekly_reset']}")
     print(f"  Session:  {bar(payload['session_pct'])}  resets {payload['session_reset']}")
     print(f"  Sessions: {payload['sessions']}")
-    print(f"  Tokens:   in={payload['tokens_in']:,}  out={payload['tokens_out']:,}  "
-          f"total={payload['tokens_in'] + payload['tokens_out']:,}")
+    print(f"  Tokens:   net={payload['tokens_net']:,}  "
+          f"gross={payload['tokens_gross']:,} (cache incl.)")
     print(f"  Status:   {color}{status.upper()}{reset}", flush=True)
 
 
@@ -630,7 +635,7 @@ def run_monitor_loop(url, headers, weekly_limit=0, daily_limit=0,
             else:
                 usage_cache = fresh
 
-        sessions, live, status, tokens_in, tokens_out = get_active_sessions()
+        sessions, live, status, tokens_net, tokens_gross = get_active_sessions()
 
         if status == "working":
             last_working = loop_start
@@ -642,10 +647,10 @@ def run_monitor_loop(url, headers, weekly_limit=0, daily_limit=0,
 
         payload = {
             **usage_cache,
-            "sessions":   sessions,
-            "status":     status,
-            "tokens_in":  tokens_in,
-            "tokens_out": tokens_out,
+            "sessions":     sessions,
+            "status":       status,
+            "tokens_net":   tokens_net,
+            "tokens_gross": tokens_gross,
         }
 
         result = None
@@ -683,7 +688,7 @@ def _cli_on_update(url):
                   f"status={status} sessions={payload['sessions']} "
                   f"weekly={payload['weekly_pct']:.0%} "
                   f"session={payload['session_pct']:.0%} "
-                  f"tokens={payload['tokens_in'] + payload['tokens_out']:,}  "
+                  f"net={payload['tokens_net']:,} gross={payload['tokens_gross']:,}  "
                   f"→ {result.status_code}")
     return _handler
 

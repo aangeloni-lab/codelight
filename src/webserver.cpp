@@ -116,10 +116,10 @@ document.getElementById('cfg').onsubmit = async (e) => {
 
 volatile bool g_statusUpdated = false;
 
-// POST /status  – companion script calls this every ~5 s
+// POST /status  – companion script calls this every ~2 s
 // Body: {"weekly_pct":0.22,"session_pct":0.71,"weekly_reset":"3d 1h",
 //        "session_reset":"2h 15m","sessions":2,"status":"working",
-//        "tokens_in":12345,"tokens_out":6789}
+//        "tokens_net":218755,"tokens_gross":37222403}
 static void handleStatus(AsyncWebServerRequest* req, uint8_t* data, size_t len,
                          size_t index, size_t total) {
     if (index + len < total) return;  // wait for full body
@@ -143,10 +143,10 @@ static void handleStatus(AsyncWebServerRequest* req, uint8_t* data, size_t len,
     displayData.sessionPct  = doc["session_pct"]  | 0.0f;
     displayData.weeklyReset  = doc["weekly_reset"].as<String>();
     displayData.sessionReset = doc["session_reset"].as<String>();
-    displayData.sessions    = doc["sessions"]     | 0;
-    displayData.tokensIn    = doc["tokens_in"]    | 0L;
-    displayData.tokensOut   = doc["tokens_out"]   | 0L;
-    displayData.connected   = true;
+    displayData.sessions     = doc["sessions"]     | 0;
+    displayData.tokensNet    = doc["tokens_net"]   | 0L;
+    displayData.tokensGross  = doc["tokens_gross"] | 0L;
+    displayData.connected    = true;
 
     const char* st = doc["status"] | "inactive";
     if      (strcmp(st, "working") == 0) displayData.status = STATUS_WORKING;

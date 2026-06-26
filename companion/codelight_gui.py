@@ -178,7 +178,7 @@ class DisplayCanvas(tk.Canvas):
         self.last_payload = {
             "weekly_pct": 0.0, "session_pct": 0.0,
             "weekly_reset": "--", "session_reset": "--",
-            "sessions": 0, "tokens_in": 0, "tokens_out": 0,
+            "sessions": 0, "tokens_net": 0, "tokens_gross": 0,
             "status": "inactive",
         }
         self.device_online = False
@@ -207,9 +207,9 @@ class DisplayCanvas(tk.Canvas):
         self.create_text(m, 107, anchor="nw",
                          text=f"{n} session{'' if n == 1 else 's'} active",
                          fill=COL_LABEL, font=_mono_font(11))
-        tot = payload.get("tokens_in", 0) + payload.get("tokens_out", 0)
+        net = payload.get("tokens_net", 0)
         self.create_text(self.W - m, 107, anchor="ne",
-                         text=f"{_format_tokens(tot)} tok",
+                         text=f"{_format_tokens(net)} tok",
                          fill=COL_RESET, font=_mono_font(11))
 
         # Divider
@@ -354,13 +354,15 @@ class CodelightApp:
 
         def on_update(payload, result, error):
             online = error is None and result is not None and result.status_code == 200
+            tokens = (f"net {payload['tokens_net']:,} · "
+                      f"gross {payload['tokens_gross']:,} (cache incl.)")
             if error is not None:
-                text = "Device offline (showing local data)"
+                text = f"Device offline · {tokens}"
             elif online:
-                text = (f"Connected · {payload['tokens_in'] + payload['tokens_out']:,} tokens")
+                text = f"Connected · {tokens}"
             else:
                 code = result.status_code if result is not None else "?"
-                text = f"Device returned HTTP {code}"
+                text = f"Device HTTP {code} · {tokens}"
             self.root.after(0, lambda: self._apply_update(payload, online, text))
 
         def run():

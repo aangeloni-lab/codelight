@@ -152,9 +152,8 @@ void displayUpdate() {
              displayData.sessions, displayData.sessions == 1 ? "" : "s");
     tft.print(sbuf);
 
-    // Token count, right-aligned on the same row
-    long totalTokens = displayData.tokensIn + displayData.tokensOut;
-    String tbuf = formatTokens(totalTokens) + " tok";
+    // Net token count, right-aligned on the same row (device shows net only)
+    String tbuf = formatTokens(displayData.tokensNet) + " tok";
     tft.setTextColor(COL_RESET, COL_BG);
     tft.setCursor(240 - X_MARGIN - tft.textWidth(tbuf), Y_SESSIONS);
     tft.print(tbuf);
