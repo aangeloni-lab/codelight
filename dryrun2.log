@@ -1,0 +1,25 @@
+[hooks] installed in /Users/agostinoangeloni/.claude/settings.json
+claude_monitor  [DRY RUN]  (Ctrl-C to stop)
+[16:35:27] [usage] polling…
+[usage] could not read credentials: [Errno 2] No such file or directory: '/Users/agostinoangeloni/.claude/.credentials.json'
+[usage] no data – keeping cached values
+[sessions] scanning 1 file(s) in /Users/agostinoangeloni/.claude/sessions
+  942.json  PID 942 (dead)  → skipped
+[sessions] result: 0 active, 0 live, overall=inactive, tokens_in=0, tokens_out=0
+
+[16:35:27] DRY RUN – would POST to http://claude-screen.local/status
+  Weekly:   [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 0%  resets --
+  Session:  [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 0%  resets --
+  Sessions: 0
+  Tokens:   in=0  out=0  total=0
+  Status:   [32mINACTIVE[0m
+[sessions] scanning 1 file(s) in /Users/agostinoangeloni/.claude/sessions
+  942.json  PID 942 (dead)  → skipped
+[sessions] result: 0 active, 0 live, overall=inactive, tokens_in=0, tokens_out=0
+
+[16:35:29] DRY RUN – would POST to http://claude-screen.local/status
+  Weekly:   [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 0%  resets --
+  Session:  [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 0%  resets --
+  Sessions: 0
+  Tokens:   in=0  out=0  total=0
+  Status:   [32mINACTIVE[0m
