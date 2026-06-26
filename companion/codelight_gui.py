@@ -104,7 +104,15 @@ def _macos_launch_agent_path() -> str:
         "~/Library/LaunchAgents/com.codelight.monitor.plist")
 
 
-def set_autostart_macos(enabled: bool, script_path: str) -> None:
+def _autostart_argv() -> list:
+    """Command to relaunch the app at login. Frozen-aware: a packaged exe
+    relaunches itself; a dev checkout relaunches python + this script."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--autostart"]
+    return [sys.executable, os.path.abspath(__file__), "--autostart"]
+
+
+def set_autostart_macos(enabled: bool) -> None:
     plist_path = _macos_launch_agent_path()
     if not enabled:
         if os.path.exists(plist_path):
@@ -112,7 +120,7 @@ def set_autostart_macos(enabled: bool, script_path: str) -> None:
             os.remove(plist_path)
         return
 
-    python_exe = sys.executable
+    args_xml = "\n".join(f"        <string>{a}</string>" for a in _autostart_argv())
     plist = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -122,9 +130,7 @@ def set_autostart_macos(enabled: bool, script_path: str) -> None:
     <string>com.codelight.monitor</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{python_exe}</string>
-        <string>{script_path}</string>
-        <string>--autostart</string>
+{args_xml}
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -140,13 +146,13 @@ def set_autostart_macos(enabled: bool, script_path: str) -> None:
     os.system(f"launchctl load '{plist_path}' 2>/dev/null")
 
 
-def set_autostart_windows(enabled: bool, script_path: str) -> None:
+def set_autostart_windows(enabled: bool) -> None:
     import winreg
     key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0,
                          winreg.KEY_SET_VALUE) as key:
         if enabled:
-            cmd = f'"{sys.executable}" "{script_path}" --autostart'
+            cmd = " ".join(f'"{a}"' for a in _autostart_argv())
             winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, cmd)
         else:
             try:
@@ -156,12 +162,11 @@ def set_autostart_windows(enabled: bool, script_path: str) -> None:
 
 
 def set_autostart(enabled: bool) -> None:
-    script_path = os.path.abspath(__file__)
     system = platform.system()
     if system == "Darwin":
-        set_autostart_macos(enabled, script_path)
+        set_autostart_macos(enabled)
     elif system == "Windows":
-        set_autostart_windows(enabled, script_path)
+        set_autostart_windows(enabled)
     # Other platforms: no-op (autostart checkbox has no effect there).
 
 
@@ -366,8 +371,9 @@ class CodelightApp:
             self.root.after(0, lambda: self._apply_update(payload, online, text))
 
         def run():
+            # No hooks installed: status is inferred from session activity only,
+            # so the app never modifies the user's Claude Code configuration.
             try:
-                cm.install_hooks(os.path.abspath(cm.__file__))
                 cm.run_monitor_loop(url, headers, on_update=on_update,
                                      stop_event=self.stop_event)
             except Exception as e:

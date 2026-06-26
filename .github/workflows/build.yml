@@ -1,0 +1,50 @@
+name: Build companion apps
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact: Codelight-macos
+          - os: windows-latest
+            artifact: Codelight-windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r companion/requirements-build.txt
+
+      - name: Build with PyInstaller
+        working-directory: companion
+        run: pyinstaller --noconfirm codelight.spec
+
+      # Package preserving macOS bundle metadata (ditto keeps the +x bit so the
+      # .app still launches after the user unzips it).
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        working-directory: companion/dist
+        run: ditto -c -k --keepParent Codelight.app ../../${{ matrix.artifact }}.zip
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        working-directory: companion/dist
+        run: Compress-Archive -Path Codelight -DestinationPath ../../${{ matrix.artifact }}.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.zip

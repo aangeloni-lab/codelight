@@ -566,6 +566,10 @@ def main():
                         help="Max weekly requests for fallback progress bar (0=disable)")
     parser.add_argument("--daily-limit", type=int, default=0,
                         help="Max daily requests for fallback progress bar (0=disable)")
+    parser.add_argument("--install-hooks", action="store_true",
+                        help="Install Claude Code hooks for precise working/waiting "
+                             "detection (edits ~/.claude/settings.json). Off by "
+                             "default — status is inferred from session activity.")
     args = parser.parse_args()
 
     # Hook mode: invoked by Claude Code hooks, not the user.
@@ -575,8 +579,10 @@ def main():
 
     _verbose = args.verbose
 
-    # Auto-install hooks in ~/.claude/settings.json on first run (idempotent).
-    install_hooks(os.path.abspath(__file__))
+    # Hooks are opt-in: by default we never touch the user's Claude config and
+    # infer status from session activity (JSONL writes) instead.
+    if args.install_hooks:
+        install_hooks(os.path.abspath(__file__))
 
     url     = f"http://{args.device}/status"
     headers = {"Content-Type": "application/json"}

@@ -1,0 +1,4 @@
+# Build-time dependencies for packaging the standalone Codelight app.
+# Runtime needs only `requests` (tkinter ships with Python).
+requests>=2.31.0
+pyinstaller>=6.0

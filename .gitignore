@@ -5,6 +5,11 @@
 __pycache__/
 *.pyc
 
+# PyInstaller build output
+companion/build/
+companion/dist/
+*.zip
+
 # Claude Code local settings
 .claude/
 
