@@ -38,7 +38,16 @@ _verbose = False
 
 def vprint(*args, **kwargs):
     if _verbose:
+        _log(*args, **kwargs)
+
+
+def _log(*args, **kwargs):
+    """print() that never crashes a windowed/frozen app whose stdout is None
+    (PyInstaller --windowed on Windows). Falls back to silent no-op."""
+    try:
         print(*args, **kwargs, flush=True)
+    except Exception:
+        pass
 
 
 def pid_alive(pid: int) -> bool:
@@ -144,7 +153,7 @@ def install_hooks(script_path: str) -> None:
     except FileNotFoundError:
         pass
     except Exception as e:
-        print(f"[hooks] warning: could not read {settings_path}: {e}", file=sys.stderr)
+        _log(f"[hooks] warning: could not read {settings_path}: {e}", file=sys.stderr)
         return
 
     cmd_base = f"python3 {script_path} --hook"
@@ -222,7 +231,7 @@ def install_hooks(script_path: str) -> None:
     with open(settings_path, "w") as f:
         json.dump(settings, f, indent=2)
         f.write("\n")
-    print(f"[hooks] installed in {settings_path}", flush=True)
+    _log(f"[hooks] installed in {settings_path}")
 
 
 def _session_status_from_hook(session_id: str) -> str | None:
@@ -245,9 +254,25 @@ def _session_status_from_hook(session_id: str) -> str | None:
         return None
 
 
+_token_cache: dict = {}   # path → (stat_key, tokens_in, tokens_out)
+
+
 def session_token_usage(jsonl_path: str) -> tuple[int, int]:
     """Sum (input, output) tokens reported across all assistant turns in a
-    session's JSONL history. Input includes cache creation/read tokens."""
+    session's JSONL history. Input includes cache creation/read tokens.
+
+    Result is cached per file and reused while its (mtime, size) is unchanged,
+    so a multi-MB history isn't re-parsed on every 2s poll."""
+    stat_key = None
+    try:
+        st = os.stat(jsonl_path)
+        stat_key = (st.st_mtime, st.st_size)
+        cached = _token_cache.get(jsonl_path)
+        if cached and cached[0] == stat_key:
+            return cached[1], cached[2]
+    except OSError:
+        pass
+
     total_in  = 0
     total_out = 0
     try:
@@ -269,6 +294,9 @@ def session_token_usage(jsonl_path: str) -> tuple[int, int]:
                 total_out += usage.get("output_tokens", 0)
     except Exception:
         pass
+
+    if stat_key is not None:
+        _token_cache[jsonl_path] = (stat_key, total_in, total_out)
     return total_in, total_out
 
 
@@ -346,6 +374,15 @@ def get_active_sessions() -> tuple[int, int, str, int, int]:
 
             live += 1
 
+            # Sum tokens for every live session regardless of activity state,
+            # so the displayed count stays stable between tool calls. Summing
+            # only active sessions made it flicker to 0 whenever Claude paused.
+            jsonl = find_session_jsonl(data)
+            if jsonl:
+                t_in, t_out = session_token_usage(jsonl)
+                tokens_in  += t_in
+                tokens_out += t_out
+
             st = session_status(data)
             if not st:
                 vprint(f"  {name}  PID {pid} (alive, idle) → skipped")
@@ -358,12 +395,6 @@ def get_active_sessions() -> tuple[int, int, str, int, int]:
                 overall = "working"
             elif st == "waiting" and overall != "working":
                 overall = "waiting"
-
-            jsonl = find_session_jsonl(data)
-            if jsonl:
-                t_in, t_out = session_token_usage(jsonl)
-                tokens_in  += t_in
-                tokens_out += t_out
         except Exception as e:
             vprint(f"  {os.path.basename(sf)}  error: {e}")
             continue
@@ -556,14 +587,14 @@ def run_monitor_loop(url, headers, weekly_limit=0, daily_limit=0,
 
         if loop_start - last_usage >= USAGE_INTERVAL:
             last_usage = loop_start   # update first — guarantees 60s gap even on error
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] [usage] polling…", flush=True)
+            _log(f"[{datetime.now().strftime('%H:%M:%S')}] [usage] polling…")
             try:
                 fresh = get_usage(weekly_limit, daily_limit)
             except Exception as e:
-                print(f"[usage] unexpected error: {e}", file=sys.stderr, flush=True)
+                _log(f"[usage] unexpected error: {e}", file=sys.stderr)
                 fresh = None
             if fresh is None:
-                print("[usage] no data – keeping cached values", flush=True)
+                _log("[usage] no data – keeping cached values")
             else:
                 usage_cache = fresh
 
@@ -597,7 +628,7 @@ def run_monitor_loop(url, headers, weekly_limit=0, daily_limit=0,
             try:
                 on_update(payload, result, error)
             except Exception as e:
-                print(f"[on_update] callback error: {e}", file=sys.stderr, flush=True)
+                _log(f"[on_update] callback error: {e}", file=sys.stderr)
 
         elapsed = time.monotonic() - loop_start
         sleep_for = max(0, STATUS_INTERVAL - elapsed)
