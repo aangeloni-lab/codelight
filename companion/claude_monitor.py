@@ -528,12 +528,22 @@ def main():
     _run_loop(args, url, headers, weekly_limit, daily_limit)
 
 
-def _run_loop(args, url, headers, weekly_limit, daily_limit):
-    if not args.dry_run:
+def run_monitor_loop(url, headers, weekly_limit=0, daily_limit=0,
+                      dry_run=False, on_update=None, stop_event=None):
+    """
+    Reusable monitor loop. Calls on_update(payload, post_result) every
+    STATUS_INTERVAL seconds, where post_result is the requests.Response
+    (or None in dry-run / on error). Runs until stop_event is set
+    (threading.Event) or forever if stop_event is None.
+
+    on_update receives a dict payload — same shape as POSTed to the device —
+    so both the CLI and a GUI can render/log it however they like.
+    """
+    if not dry_run:
         try:
             import requests
         except ImportError:
-            sys.exit("Install requests:  pip install requests")
+            raise RuntimeError("Install requests:  pip install requests")
 
     _empty = {"session_pct": 0.0, "weekly_pct": 0.0,
               "session_reset": "--", "weekly_reset": "--"}
@@ -541,7 +551,7 @@ def _run_loop(args, url, headers, weekly_limit, daily_limit):
     last_usage   = 0.0   # 0 → poll immediately on first iteration
     last_working = 0.0   # monotonic time of last WORKING detection (for sticky state)
 
-    while True:
+    while stop_event is None or not stop_event.is_set():
         loop_start = time.monotonic()
 
         if loop_start - last_usage >= USAGE_INTERVAL:
@@ -575,23 +585,52 @@ def _run_loop(args, url, headers, weekly_limit, daily_limit):
             "tokens_out": tokens_out,
         }
 
-        if args.dry_run:
-            print_payload(payload, url)
-        else:
+        result = None
+        error  = None
+        if not dry_run:
             try:
-                r = requests.post(url, json=payload, headers=headers, timeout=5)
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] "
-                      f"status={status} sessions={sessions} "
-                      f"weekly={usage_cache['weekly_pct']:.0%} "
-                      f"session={usage_cache['session_pct']:.0%} "
-                      f"tokens={tokens_in + tokens_out:,}  "
-                      f"→ {r.status_code}")
+                result = requests.post(url, json=payload, headers=headers, timeout=5)
             except Exception as e:
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] POST failed: {e}",
-                      file=sys.stderr)
+                error = e
+
+        if on_update:
+            try:
+                on_update(payload, result, error)
+            except Exception as e:
+                print(f"[on_update] callback error: {e}", file=sys.stderr, flush=True)
 
         elapsed = time.monotonic() - loop_start
-        time.sleep(max(0, STATUS_INTERVAL - elapsed))
+        sleep_for = max(0, STATUS_INTERVAL - elapsed)
+        if stop_event is not None:
+            stop_event.wait(sleep_for)
+        else:
+            time.sleep(sleep_for)
+
+
+def _cli_on_update(url):
+    def _handler(payload, result, error):
+        status = payload["status"]
+        if result is None and error is None:
+            print_payload(payload, url)
+        elif error is not None:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] POST failed: {error}",
+                  file=sys.stderr)
+        else:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] "
+                  f"status={status} sessions={payload['sessions']} "
+                  f"weekly={payload['weekly_pct']:.0%} "
+                  f"session={payload['session_pct']:.0%} "
+                  f"tokens={payload['tokens_in'] + payload['tokens_out']:,}  "
+                  f"→ {result.status_code}")
+    return _handler
+
+
+def _run_loop(args, url, headers, weekly_limit, daily_limit):
+    try:
+        run_monitor_loop(url, headers, weekly_limit, daily_limit,
+                          dry_run=args.dry_run, on_update=_cli_on_update(url))
+    except RuntimeError as e:
+        sys.exit(str(e))
 
 
 if __name__ == "__main__":
