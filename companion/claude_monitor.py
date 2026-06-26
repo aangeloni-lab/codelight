@@ -435,6 +435,41 @@ def _format_iso_countdown(iso_ts: str) -> str:
 
 _USAGE_API = "https://claude.ai/api/oauth/usage"
 _CREDS_PATH = os.path.expanduser("~/.claude/.credentials.json")
+_KEYCHAIN_SERVICE = "Claude Code-credentials"
+
+
+def _token_from_creds_file() -> str | None:
+    try:
+        with open(_CREDS_PATH) as f:
+            creds = json.load(f)
+        return (creds.get("claudeAiOauth") or {}).get("accessToken")
+    except Exception:
+        return None
+
+
+def _token_from_macos_keychain() -> str | None:
+    """Newer Claude Code on macOS stores the OAuth token in the login
+    Keychain instead of a file. Read it via the `security` CLI."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["security", "find-generic-password", "-s", _KEYCHAIN_SERVICE, "-w"],
+            capture_output=True, text=True, timeout=5)
+        if out.returncode != 0 or not out.stdout.strip():
+            return None
+        creds = json.loads(out.stdout)
+        return (creds.get("claudeAiOauth") or {}).get("accessToken")
+    except Exception:
+        return None
+
+
+def read_oauth_token() -> str | None:
+    """Locate the claude.ai usage OAuth token across platforms:
+    credentials file first (Linux/Windows/older macOS), then the macOS
+    Keychain. Returns None if Claude Code isn't logged in on this machine."""
+    return _token_from_creds_file() or _token_from_macos_keychain()
 
 
 def get_usage(weekly_limit: int = 0, daily_limit: int = 0) -> dict | None:
@@ -443,12 +478,9 @@ def get_usage(weekly_limit: int = 0, daily_limit: int = 0) -> dict | None:
     Returns a dict with session_pct/weekly_pct/resets, or None on failure
     (caller keeps cached values).
     """
-    try:
-        with open(_CREDS_PATH) as f:
-            creds = json.load(f)
-        token = creds["claudeAiOauth"]["accessToken"]
-    except Exception as e:
-        vprint(f"[usage] could not read credentials: {e}")
+    token = read_oauth_token()
+    if not token:
+        vprint("[usage] no claude.ai OAuth token found (not logged in?)")
         return None
 
     req = urllib.request.Request(
